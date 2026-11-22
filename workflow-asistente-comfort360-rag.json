@@ -1,0 +1,969 @@
+{
+ "name": "Proyecto Final - Asistente WhatsApp Comfort 360 (RAG)",
+ "nodes": [
+  {
+   "parameters": {
+    "content": "## 1) Cargar la base de conocimiento (RAG)\nLee la planilla de Google Sheets publicada como CSV (fuente 2), valida que haya respondido bien y guarda cada fila en el Vector Store con embeddings de Ollama (nomic-embed-text). Se ejecuta todos los días a las 8 (o a mano desde Ejecutar) para tomar los cambios de la planilla.",
+    "height": 440,
+    "width": 1660,
+    "color": 4
+   },
+   "id": "566a5ef6-b67f-4855-b829-e662ce9790ac",
+   "name": "Nota 1",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -80,
+    -480
+   ]
+  },
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "triggerAtHour": 8
+      }
+     ]
+    }
+   },
+   "id": "cfb0cc3c-8759-4410-a8e5-d4c18216883c",
+   "name": "1. Cargar base de conocimiento",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "842c3ebb-dc0c-4bbc-8b4d-6fb0f8ba3de4",
+       "name": "url_planilla",
+       "value": "https://docs.google.com/spreadsheets/d/1Ce5SBgQ1TvOymw7FyikfEYAD9PMIm70ayiJPvwCCyck/export?format=csv",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "e76e7cf0-5878-442f-b1ca-35dce3aa3516",
+   "name": "Configuración",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    200,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "url": "={{ $json.url_planilla }}",
+    "options": {
+     "response": {
+      "response": {
+       "fullResponse": true,
+       "neverError": true,
+       "responseFormat": "text"
+      }
+     },
+     "timeout": 15000
+    }
+   },
+   "id": "1fcfad8e-b619-4b3d-93b8-d65fd9c73c58",
+   "name": "Leer planilla (Google Sheets)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    400,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Convierte la planilla (CSV) en un texto por fila para indexar en el Vector Store\nconst status = $json.statusCode ?? 200;\nconst csv = (typeof $json.data === 'string' ? $json.data : (typeof $json.body === 'string' ? $json.body : '')) || '';\nif (status !== 200 || !csv.trim()) {\n  return [{ json: { ok: false, statusCode: status, motivo: 'La planilla no respondió o vino vacía' } }];\n}\nfunction parseCSV(t) {\n  const rows = []; let row = [], f = '', q = false;\n  for (let i = 0; i < t.length; i++) {\n    const c = t[i];\n    if (q) { if (c === '\"' && t[i+1] === '\"') { f += '\"'; i++; } else if (c === '\"') q = false; else f += c; }\n    else if (c === '\"') q = true;\n    else if (c === ',') { row.push(f); f = ''; }\n    else if (c === '\\n' || c === '\\r') { if (c === '\\r' && t[i+1] === '\\n') i++; row.push(f); rows.push(row); row = []; f = ''; }\n    else f += c;\n  }\n  if (f || row.length) { row.push(f); rows.push(row); }\n  return rows.filter(r => r.some(x => x.trim()));\n}\nconst [head, ...rows] = parseCSV(csv);\nconst ix = n => head.findIndex(h => h.trim().toLowerCase() === n);\nconst iT = ix('tema'), iP = ix('pregunta'), iR = ix('respuesta');\nif (iP < 0 || iR < 0) return [{ json: { ok: false, statusCode: status, motivo: 'La planilla no tiene las columnas pregunta y respuesta' } }];\nreturn rows.map(r => ({ json: { ok: true, tema: r[iT] || '', texto: `Tema: ${r[iT] || ''}\\nPregunta: ${r[iP]}\\nRespuesta: ${r[iR]}` } }));"
+   },
+   "id": "70d97e7b-29f0-486a-8435-347e01011c58",
+   "name": "Convertir filas en textos",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    600,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "c5802835-d7b6-47d8-988f-c5fa2fc9af75",
+       "leftValue": "={{ $json.ok }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "looseTypeValidation": true,
+    "options": {}
+   },
+   "id": "f460de61-89cf-4f72-8fc3-0070d16a9e1b",
+   "name": "¿La planilla respondió bien?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    800,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "mode": "insert",
+    "memoryKey": "comfort360"
+   },
+   "id": "6f42238e-c5ad-4766-bf0a-2173619c6b25",
+   "name": "Guardar en Vector Store",
+   "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+   "typeVersion": 1,
+   "position": [
+    1040,
+    -400
+   ]
+  },
+  {
+   "parameters": {
+    "model": "nomic-embed-text:latest"
+   },
+   "id": "cd0eaa60-c6fc-464c-8183-c4bd57ffdd5e",
+   "name": "Embeddings Ollama (carga)",
+   "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+   "typeVersion": 1,
+   "position": [
+    960,
+    -220
+   ]
+  },
+  {
+   "parameters": {
+    "jsonMode": "expressionData",
+    "jsonData": "={{ $json.texto }}",
+    "options": {}
+   },
+   "id": "1abf1faa-8e7e-452a-a4e0-31e0c3036e6c",
+   "name": "Lector de documentos",
+   "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+   "typeVersion": 1,
+   "position": [
+    1160,
+    -220
+   ]
+  },
+  {
+   "parameters": {
+    "chunkSize": 1000,
+    "chunkOverlap": 0,
+    "options": {}
+   },
+   "id": "dc110e9b-a733-4e7b-8a80-fa76935f31e5",
+   "name": "Separador de texto",
+   "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+   "typeVersion": 1,
+   "position": [
+    1260,
+    -120
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "fc8c6ae2-3579-499a-a0ae-940dd68470ab",
+       "name": "aviso",
+       "value": "=No se pudo cargar la base de conocimiento ({{ $json.motivo }}, código {{ $json.statusCode }}). Revisar el link de la planilla.",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "7a528367-3ce5-4333-8e23-3265852cffa3",
+   "name": "Error: planilla no disponible",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    1440,
+    -300
+   ]
+  },
+  {
+   "parameters": {
+    "content": "## 2) Atender mensajes de WhatsApp\nEntrada 1: Webhook (WhatsApp Business) o, para probar, mensajes simulados. Se valida el mensaje, se recuperan del Vector Store los 4 fragmentos más parecidos (RAG) y el AI Agent (Ollama llama3.2:3b, memoria por teléfono) decide responder o derivar. Su respuesta se valida antes de enviarla.",
+    "height": 780,
+    "width": 2460,
+    "color": 5
+   },
+   "id": "f5565fd7-fdd3-48a8-bb61-696efc5dab10",
+   "name": "Nota 2",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -80,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "comfort360-whatsapp",
+    "responseMode": "lastNode",
+    "options": {}
+   },
+   "id": "a44bb17d-4e71-49dc-8cc7-739eaa12699b",
+   "name": "Webhook WhatsApp",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    160
+   ]
+  },
+  {
+   "parameters": {},
+   "id": "78857046-eba4-49a6-8fa4-e460a2d2698c",
+   "name": "2. Probar con mensajes",
+   "type": "n8n-nodes-base.manualTrigger",
+   "typeVersion": 1,
+   "position": [
+    0,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Simula mensajes de WhatsApp (mismo formato que envía WhatsApp Business)\nreturn [\n  { json: { from: '5491100000001', text: { body: \"Hola, buenas tardes. ¿Cuánto sale el kit de bandas?\" } } },\n  { json: { from: '5491100000001', text: { body: \"Tengo 70 años y nunca hice ejercicio, ¿con cuántas bandas empiezo?\" } } },\n  { json: { from: '5491100000001', text: { body: \"¿Cómo se hace el puente de glúteos?\" } } },\n  { json: { from: '5491100000002', text: { body: \"Me operaron de la rodilla hace un mes, ¿puedo hacer los ejercicios?\" } } },\n  { json: { from: '5491100000002', text: { body: \"Quiero comprar el kit, ¿cuánto sale el envío a Mendoza?\" } } },\n  { json: { from: '5491100000003', text: { body: \"   \" } } }\n];"
+   },
+   "id": "0e24479f-6d6a-498d-95e2-d3dc75312c32",
+   "name": "Mensajes de prueba",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    200,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "36b45908-ccf2-4e4b-86f7-29de5b55cccf",
+       "name": "telefono",
+       "value": "={{ $json.body ? $json.body.from : $json.from }}",
+       "type": "string"
+      },
+      {
+       "id": "76f201d6-89d4-4b04-bdfa-af5299ae1242",
+       "name": "mensaje",
+       "value": "={{ ($json.body ? $json.body.text?.body : $json.text?.body) || '' }}",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "40a5d38c-fd66-48a8-a757-8494f5575401",
+   "name": "Extraer teléfono y mensaje",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    420,
+    260
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "803ecb77-7885-439c-9593-288b6b8d44f7",
+       "leftValue": "={{ $json.mensaje.trim() }}",
+       "rightValue": "",
+       "operator": {
+        "type": "string",
+        "operation": "notEmpty",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "looseTypeValidation": true,
+    "options": {}
+   },
+   "id": "db39818a-4245-45d0-aeea-a60edb763c8c",
+   "name": "¿Mensaje válido?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    620,
+    260
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "0248a2f6-82bd-4a1b-aad6-d498708834db",
+       "name": "telefono",
+       "value": "={{ $json.telefono }}",
+       "type": "string"
+      },
+      {
+       "id": "7b9c9b8f-2e51-4568-a96a-4003ea76c8c0",
+       "name": "accion",
+       "value": "responder",
+       "type": "string"
+      },
+      {
+       "id": "fb14bc8a-bef1-42fb-a335-01ddce10e3b6",
+       "name": "categoria",
+       "value": "mensaje_vacio",
+       "type": "string"
+      },
+      {
+       "id": "3d73cf6d-123d-47fb-934f-7d5b5a42a6d6",
+       "name": "respuesta",
+       "value": "¡Hola! Soy el asistente de Comfort 360. ¿En qué te puedo ayudar con tu kit de bandas CENIBA?",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "cff47615-3053-431c-ba17-fb948d7345e6",
+   "name": "Mensaje vacío: respuesta fija",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    860,
+    560
+   ]
+  },
+  {
+   "parameters": {
+    "options": {}
+   },
+   "id": "9bca21b0-581d-4b60-b14a-e45a79ed538f",
+   "name": "Recorrer mensajes",
+   "type": "n8n-nodes-base.splitInBatches",
+   "typeVersion": 3,
+   "position": [
+    860,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "mode": "load",
+    "memoryKey": "comfort360",
+    "prompt": "={{ $json.mensaje }}",
+    "topK": 4
+   },
+   "id": "c730eaf6-061a-46df-87b9-6733379b5b5d",
+   "name": "Buscar en Vector Store",
+   "type": "@n8n/n8n-nodes-langchain.vectorStoreInMemory",
+   "typeVersion": 1,
+   "position": [
+    1080,
+    240
+   ],
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "model": "nomic-embed-text:latest"
+   },
+   "id": "d8d3e160-aff5-4556-909e-5daa3be90bb4",
+   "name": "Embeddings Ollama (búsqueda)",
+   "type": "@n8n/n8n-nodes-langchain.embeddingsOllama",
+   "typeVersion": 1,
+   "position": [
+    1080,
+    440
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Junta los fragmentos recuperados del Vector Store y arma el mensaje para el agente\nconst msg = $('Recorrer mensajes').first().json;\nconst docs = $input.all().map(i => i.json.document?.pageContent).filter(Boolean);\nconst contexto = docs.length ? docs.join('\\n---\\n') : '(sin información encontrada en la base de conocimiento)';\nreturn [{ json: { telefono: msg.telefono, mensaje: msg.mensaje, fragmentos: docs.length,\n  prompt: `CONTEXTO (base de conocimiento de Comfort 360):\\n${contexto}\\n\\nMENSAJE DEL CLIENTE:\\n${msg.mensaje}` } }];"
+   },
+   "id": "b39e9d06-229e-428f-9ac3-221c3333e6a0",
+   "name": "Armar contexto",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1300,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "promptType": "define",
+    "text": "={{ $json.prompt }}",
+    "options": {
+     "systemMessage": "ROL\nSos el asistente de WhatsApp de Comfort 360, un emprendimiento que vende el kit de bandas elásticas CENIBA (5 bandas + guía de 11 ejercicios sin impacto), pensado sobre todo para personas mayores.\n\nCÓMO RESPONDÉS\n- Usá SOLO la información de la sección CONTEXTO que viene en cada mensaje. Si la respuesta no está ahí, no la inventes: derivá.\n- Tono cálido, paciente y respetuoso, con palabras simples. Tratá de \"vos\"; si el cliente escribe de \"usted\", respondé de \"usted\".\n- Mensajes cortos, como en WhatsApp: máximo 4 líneas, sin listas largas ni asteriscos. Como mucho un emoji.\n\nQUÉ PODÉS HACER\n- Responder dudas sobre el kit, el precio, las bandas, los ejercicios de la guía, el plan de 8 semanas y el Reto CENIBA.\n- Explicar cómo se hace un ejercicio de la guía, tal como figura en el contexto.\n\nLÍMITES (QUÉ NO PODÉS HACER)\n- No sos médico ni kinesiólogo: no diagnostiques ni indiques tratamientos, ni prometas resultados.\n- No inventes precios, costos de envío, descuentos, stock ni plazos.\n- No tomes pedidos ni pagos, y no pidas datos de tarjetas, documentos ni datos de salud.\n\nCUÁNDO DERIVAR A UNA PERSONA (accion = \"derivar\")\n- La persona quiere comprar, pregunta el costo de envío a su provincia, o pregunta por cuotas o descuentos.\n- Menciona dolor, una lesión, una operación o una enfermedad: respondé con amabilidad que consulte a su médico o kinesiólogo antes de empezar, y derivá.\n- Tiene un reclamo, pide hablar con alguien, o el mensaje es ambiguo o no está cubierto por el CONTEXTO.\nEn esos casos, en \"respuesta\" decile que una persona del equipo de Comfort 360 le va a responder por este mismo WhatsApp.\n\nFORMATO DE SALIDA\nRespondé SOLO con un JSON válido, sin texto antes ni después:\n{\"accion\": \"responder\" o \"derivar\", \"categoria\": \"producto\" | \"ejercicios\" | \"compra\" | \"salud\" | \"reclamo\" | \"otro\", \"respuesta\": \"el mensaje para el cliente\"}"
+    }
+   },
+   "id": "d2e76eb0-f6f7-48bb-8c81-b86c4a581cca",
+   "name": "AI Agent",
+   "type": "@n8n/n8n-nodes-langchain.agent",
+   "typeVersion": 1.7,
+   "position": [
+    1500,
+    240
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "model": "llama3.2:3b",
+    "options": {
+     "temperature": 0.2
+    }
+   },
+   "id": "637bec52-1b71-495d-9d96-4b4ec5320fba",
+   "name": "Ollama Chat Model",
+   "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+   "typeVersion": 1,
+   "position": [
+    1460,
+    460
+   ]
+  },
+  {
+   "parameters": {
+    "sessionIdType": "customKey",
+    "sessionKey": "={{ $json.telefono }}",
+    "contextWindowLength": 6
+   },
+   "id": "2848b338-fb6d-4c71-9325-2366683cb361",
+   "name": "Memoria (por teléfono)",
+   "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+   "typeVersion": 1.3,
+   "position": [
+    1620,
+    460
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Valida la respuesta del agente. Si viene vacía, con error o sin el formato pedido, se deriva a una persona.\nconst ctx = $('Armar contexto').first().json;\nconst raw = $json.output ?? '';\nlet r = null;\ntry { const m = String(raw).match(/\\{[\\s\\S]*\\}/); r = m ? JSON.parse(m[0]) : null; } catch (e) { r = null; }\nconst valido = r && ['responder', 'derivar'].includes(String(r.accion).toLowerCase()) && String(r.respuesta || '').trim();\nif (!valido) {\n  return [{ json: { telefono: ctx.telefono, mensaje: ctx.mensaje, accion: 'derivar', categoria: 'error_ia',\n    respuesta: 'Gracias por escribirnos. En un ratito te responde una persona del equipo de Comfort 360 por este mismo WhatsApp.',\n    error_ia: $json.error ? String($json.error.message || $json.error) : 'Respuesta vacía o fuera de formato' } }];\n}\nlet accion = String(r.accion).toLowerCase();\nif (ctx.fragmentos === 0) accion = 'derivar';   // sin contexto recuperado, no se responde solo\nreturn [{ json: { telefono: ctx.telefono, mensaje: ctx.mensaje, accion, categoria: r.categoria || 'otro',\n  respuesta: String(r.respuesta).trim(), error_ia: '' } }];"
+   },
+   "id": "81b8acfd-bb3a-48ff-b192-c65e86150d5c",
+   "name": "Validar respuesta de la IA",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1820,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "rules": {
+     "values": [
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "c453f724-34b1-4f08-8595-9bdf5b2f6f3d",
+          "leftValue": "={{ $json.accion }}",
+          "rightValue": "responder",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "Responder"
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "3effb86c-318d-4c65-952d-941191209f84",
+          "leftValue": "={{ $json.accion }}",
+          "rightValue": "derivar",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "Derivar"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "1997e50e-0e37-4845-8c56-2aafb5e3a256",
+   "name": "¿Responder o derivar?",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    2020,
+    240
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "d66619e6-2b23-4d96-84c0-f7d5d4924428",
+       "name": "derivar_a_humano",
+       "value": "false",
+       "type": "boolean"
+      }
+     ]
+    },
+    "options": {},
+    "includeOtherFields": true
+   },
+   "id": "31220c51-8c46-4dbe-845c-041247c8a54e",
+   "name": "Respuesta automática",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    2240,
+    140
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "de1f3d0f-7fdc-42c4-b836-73fc6a0f62d5",
+       "name": "derivar_a_humano",
+       "value": "true",
+       "type": "boolean"
+      },
+      {
+       "id": "5cc21ded-3aa5-48bc-b59c-ef5ba04c0222",
+       "name": "aviso_equipo",
+       "value": "=Derivar: {{ $json.telefono }} ({{ $json.categoria }}): \"{{ $json.mensaje }}\"",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {},
+    "includeOtherFields": true
+   },
+   "id": "fcb77f9e-8a70-4430-b664-66856cd7978b",
+   "name": "Derivar a una persona",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    2240,
+    360
+   ]
+  },
+  {
+   "parameters": {
+    "assignments": {
+     "assignments": [
+      {
+       "id": "7c09711f-4e0a-49d9-a0a1-8ed9967eb576",
+       "name": "messaging_product",
+       "value": "whatsapp",
+       "type": "string"
+      },
+      {
+       "id": "cb7e22c9-dc4b-466f-a052-f2ef1d3a9d5c",
+       "name": "to",
+       "value": "={{ $json.telefono }}",
+       "type": "string"
+      },
+      {
+       "id": "f8264387-5b9b-401b-886e-c27b0bbf9671",
+       "name": "mensaje_cliente",
+       "value": "={{ $json.mensaje }}",
+       "type": "string"
+      },
+      {
+       "id": "994d400b-a8e2-4222-9770-32d02738e425",
+       "name": "respuesta",
+       "value": "={{ $json.respuesta }}",
+       "type": "string"
+      },
+      {
+       "id": "d123c8fc-a660-4c55-a9e1-1ea3f147107e",
+       "name": "accion",
+       "value": "={{ $json.accion }}",
+       "type": "string"
+      },
+      {
+       "id": "eca6c47a-2981-4215-91ac-4bac3c43445e",
+       "name": "derivar_a_humano",
+       "value": "={{ $json.derivar_a_humano }}",
+       "type": "boolean"
+      },
+      {
+       "id": "e09384dd-a4af-41e0-9148-f52665cd4b75",
+       "name": "error_ia",
+       "value": "={{ $json.error_ia || '' }}",
+       "type": "string"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "2c93847d-01ff-4027-a0d7-e48665f9d1ef",
+   "name": "Respuestas para WhatsApp",
+   "type": "n8n-nodes-base.set",
+   "typeVersion": 3.4,
+   "position": [
+    1080,
+    110
+   ]
+  }
+ ],
+ "connections": {
+  "1. Cargar base de conocimiento": {
+   "main": [
+    [
+     {
+      "node": "Configuración",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Configuración": {
+   "main": [
+    [
+     {
+      "node": "Leer planilla (Google Sheets)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Leer planilla (Google Sheets)": {
+   "main": [
+    [
+     {
+      "node": "Convertir filas en textos",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Convertir filas en textos": {
+   "main": [
+    [
+     {
+      "node": "¿La planilla respondió bien?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿La planilla respondió bien?": {
+   "main": [
+    [
+     {
+      "node": "Guardar en Vector Store",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Error: planilla no disponible",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Embeddings Ollama (carga)": {
+   "ai_embedding": [
+    [
+     {
+      "node": "Guardar en Vector Store",
+      "type": "ai_embedding",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Lector de documentos": {
+   "ai_document": [
+    [
+     {
+      "node": "Guardar en Vector Store",
+      "type": "ai_document",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Separador de texto": {
+   "ai_textSplitter": [
+    [
+     {
+      "node": "Lector de documentos",
+      "type": "ai_textSplitter",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Webhook WhatsApp": {
+   "main": [
+    [
+     {
+      "node": "Extraer teléfono y mensaje",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "2. Probar con mensajes": {
+   "main": [
+    [
+     {
+      "node": "Mensajes de prueba",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mensajes de prueba": {
+   "main": [
+    [
+     {
+      "node": "Extraer teléfono y mensaje",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Extraer teléfono y mensaje": {
+   "main": [
+    [
+     {
+      "node": "¿Mensaje válido?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿Mensaje válido?": {
+   "main": [
+    [
+     {
+      "node": "Recorrer mensajes",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Mensaje vacío: respuesta fija",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Recorrer mensajes": {
+   "main": [
+    [
+     {
+      "node": "Respuestas para WhatsApp",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Buscar en Vector Store",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Embeddings Ollama (búsqueda)": {
+   "ai_embedding": [
+    [
+     {
+      "node": "Buscar en Vector Store",
+      "type": "ai_embedding",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Buscar en Vector Store": {
+   "main": [
+    [
+     {
+      "node": "Armar contexto",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Armar contexto": {
+   "main": [
+    [
+     {
+      "node": "AI Agent",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Ollama Chat Model": {
+   "ai_languageModel": [
+    [
+     {
+      "node": "AI Agent",
+      "type": "ai_languageModel",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Memoria (por teléfono)": {
+   "ai_memory": [
+    [
+     {
+      "node": "AI Agent",
+      "type": "ai_memory",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "AI Agent": {
+   "main": [
+    [
+     {
+      "node": "Validar respuesta de la IA",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Validar respuesta de la IA": {
+   "main": [
+    [
+     {
+      "node": "¿Responder o derivar?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿Responder o derivar?": {
+   "main": [
+    [
+     {
+      "node": "Respuesta automática",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Derivar a una persona",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Respuesta automática": {
+   "main": [
+    [
+     {
+      "node": "Recorrer mensajes",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Derivar a una persona": {
+   "main": [
+    [
+     {
+      "node": "Recorrer mensajes",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ },
+ "pinData": {}
+}
